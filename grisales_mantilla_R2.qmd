@@ -1,0 +1,1052 @@
+---
+title: "Educación y pensión en la vejez: evidencia para la Comuna 12 – La América de Medellín"
+subtitle: "Reto 2: Haciendo Microeconomía · Econometría II · Universidad EAFIT · 2026-II"
+author:
+  - Juan David Grisales Toro
+  - Jacobo Mantilla L.
+date: 2026-10-22
+date-format: "D [de] MMMM [de] YYYY"
+lang: es
+format:
+  pdf:
+    documentclass: article
+    papersize: letter
+    geometry: "margin=2.5cm"
+    fontsize: 11pt
+    number-sections: true
+    colorlinks: true
+    toc: false
+    fig-pos: "H"
+    tbl-pos: "H"
+    include-in-header:
+      text: |
+        \usepackage{float}
+        \usepackage{needspace}
+        \usepackage{booktabs}
+        \renewcommand{\arraystretch}{1.1}
+crossref:
+  fig-title: "Gráfico"
+  tbl-title: "Cuadro"
+  fig-prefix: "Gráfico"
+  tbl-prefix: "Cuadro"
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: codigo-0
+#| include: false
+# =============================================================================
+# Reto 2 - Haciendo Microeconomía | Econometría II - EAFIT 2026-II
+# Grupo 2 - Comuna 12 La América
+# Juan David Grisales Toro y Jacobo Mantilla L.
+#
+# Pregunta: ¿la educación aumenta la probabilidad de que un adulto mayor
+# de La América tenga pensión de jubilación? ¿Cómo se compara La América
+# con Medellín y con comunas de condiciones de vida menores, similares y
+# superiores?
+# Datos: Encuesta de Calidad de Vida de Medellín (ECV) 2025
+# Modelo: elección discreta (MPL, probit y logit), como en el Tema 11 del curso
+# =============================================================================
+
+# Todo el código del reto está en este documento: construcción de la base a partir de la
+# ECV pura (ECV_2025.xlsx, en la misma carpeta del .qmd), estadísticas, modelos,
+# pruebas y cuadros. Ningún número del documento se escribe a mano.
+```
+
+```{r}
+#| label: codigo-1
+#| include: false
+# ---- 0. Paquetes (los mismos del Tema 11 y del tema de MCG) ------------------
+# install.packages(c("tidyverse","readxl","knitr","margins","marginaleffects","pscl",
+#                    "vcdExtra","generalhoslem","ResourceSelection","epiDisplay",
+#                    "lmtest","sandwich","stargazer","ggrepel"))
+library(tidyverse); library(readxl); library(knitr)
+library(margins); library(marginaleffects)
+library(pscl); library(vcdExtra); library(generalhoslem)
+library(ResourceSelection); library(epiDisplay)
+library(lmtest); library(sandwich); library(stargazer); library(ggrepel)
+
+# El archivo ECV_2025.xlsx debe estar en la misma carpeta que este .qmd.
+```
+
+```{r}
+#| label: codigo-2
+#| include: false
+# ---- 1. Construcción de la base ---------------------------------------------
+ecv <- read_excel("ECV_2025.xlsx")
+dim(ecv)   # 20.408 personas y 329 variables
+
+# 1.1 Años de educación a partir del último nivel aprobado (E.6).
+# La ECV casi no reporta el grado exacto (E.8 = 0 en la mayoría de adultos
+# mayores), por eso se asignan los años normativos de cada nivel en Colombia.
+anios_nivel <- c(`0` = 0,  `1` = 0,  `2` = 5,  `3` = 9,  `4` = 11,
+                 `5` = 11, `6` = 14, `7` = 16, `8` = 17, `9` = 18, `10` = 21)
+
+# 1.2 Índice Multidimensional de Condiciones de Vida (IMCV) 2024 por comuna.
+# Fuente: Alcaldía de Medellín, DAP, servicio de indicadores de la ECV
+# (servidormapas/rest/services/estadisticas/VC_Indicadores_ECV, capa 2).
+imcv <- tibble(
+  comuna = 1:16,
+  nombre = c("Popular", "Santa Cruz", "Manrique", "Aranjuez", "Castilla",
+             "Doce de Octubre", "Robledo", "Villa Hermosa", "Buenos Aires",
+             "La Candelaria", "Laureles-Estadio", "La América", "San Javier",
+             "El Poblado", "Guayabal", "Belén"),
+  imcv_2024 = c(35.07, 37.77, 38.09, 43.79, 48.41, 41.50, 45.07, 38.94, 47.98,
+                52.96, 67.79, 60.09, 41.23, 76.26, 52.40, 54.77)
+)
+
+# Grupos de comparación según el IMCV 2024 (La América = 60,09):
+#   Superiores: IMCV mayor que La América (El Poblado, Laureles-Estadio)
+#   Similares:  las tres comunas que le siguen, IMCV entre 52 y 55
+#               (Belén, La Candelaria, Guayabal)
+#   Menores:    las demás, IMCV menor a 50
+imcv <- imcv %>%
+  mutate(grupo = case_when(comuna == 12 ~ "La América",
+                           comuna %in% c(11, 14) ~ "Superiores",
+                           comuna %in% c(10, 15, 16) ~ "Similares",
+                           TRUE ~ "Menores"))
+
+# 1.3 Base de adultos mayores (60+) de las 16 comunas (sin corregimientos)
+am_med <- ecv %>%
+  filter(A.7 <= 16, B.6 >= 60) %>%
+  transmute(
+    comuna   = A.7,
+    # y: 1 si la situación laboral actual es "jubilado o jubilado anticipado"
+    pension  = as.integer(H.31 == 7),
+    # y alternativa (robustez): reportó un monto de pensión de jubilación > 0;
+    # NA si es jubilado pero no respondió o no sabe el monto
+    pension_monto = case_when(H.20 > 0 ~ 1L,
+                              H.20 %in% c(-99, -98) ~ NA_integer_,
+                              TRUE ~ 0L),
+    # x principal
+    educ     = unname(anios_nivel[as.character(E.6)]),
+    nivel_educ = factor(case_when(E.6 %in% 0:2  ~ "Primaria o menos",
+                                  E.6 %in% 3:5  ~ "Secundaria/media",
+                                  E.6 %in% 6:10 ~ "Superior"),
+                        levels = c("Primaria o menos", "Secundaria/media", "Superior")),
+    # controles
+    edad     = B.6,
+    mujer    = as.integer(B.2 == 2),
+    pareja   = as.integer(B.7 %in% c(2, 5, 6)),   # casado o en unión libre
+    estrato  = A.10,
+    migrante = as.integer(C.1 == 2),               # no ha vivido siempre en Medellín
+    # variables para describir el problema
+    trabaja  = as.integer(H.31 %in% 1:4),
+    ayuda_social = as.integer(H.27 > 0),           # ayudas de asistencia social
+    dificultad_mes = L.2                           # 0 = muy difícil ... 10 = sin dificultad
+  ) %>%
+  left_join(imcv, by = "comuna")
+
+nrow(am_med)                            # adultos mayores en las 16 comunas
+sum(is.na(am_med$educ))                 # no saben su nivel educativo
+am_med <- am_med %>% filter(!is.na(educ))
+nrow(am_med)                            # muestra de la ciudad
+
+# 1.4 Muestra de La América
+base <- am_med %>% filter(comuna == 12)
+nrow(ecv %>% filter(A.7 == 12))         # 707 personas encuestadas en la comuna
+nrow(ecv %>% filter(A.7 == 12, B.6 >= 60))  # 295 adultos mayores
+nrow(base)                              # 290 después de quitar 5 sin educación
+
+# 1.5 Los jubilados que no reportaron el monto de la pensión
+table(base$pension, is.na(base$pension_monto))
+# pensión = 1 y monto faltante: se cuentan como pensionados porque declararon
+# estar jubilados; la robustez 6.1 los excluye
+```
+
+```{r}
+#| label: codigo-3
+#| include: false
+# ---- 2. Estadísticas descriptivas: La América --------------------------------
+# 2.1 Estadísticas de las variables del modelo
+vars <- c("pension", "educ", "edad", "mujer", "pareja", "estrato", "migrante")
+kable(base %>% dplyr::select(all_of(vars)) %>%
+        pivot_longer(everything()) %>%
+        group_by(name) %>%
+        dplyr::summarise(media = mean(value), de = sd(value),
+                         min = min(value), max = max(value), n = n()),
+      digits = 2)
+
+# 2.2 La variable dependiente
+kable(base %>% group_by(pension) %>%
+        dplyr::summarise(N = n()) %>%
+        mutate(Porcent = N / sum(N)), digits = 3)
+
+# 2.3 Relación y–x: pensión según nivel educativo
+tab_educ <- base %>% group_by(nivel_educ) %>%
+  dplyr::summarise(n = n(), pct_pension = 100 * mean(pension), educ_media = mean(educ))
+kable(tab_educ, digits = 1)
+
+# Medias según tenencia de pensión
+kable(base %>% group_by(pension) %>%
+        dplyr::summarise(educ_media = mean(educ), edad_media = mean(edad),
+                         mujer = mean(mujer), pareja = mean(pareja),
+                         estrato = mean(estrato), migrante = mean(migrante)),
+      digits = 2)
+# Diferencia de medias de educación con una regresión por MCO sobre la dummy
+dif_educ <- lm(educ ~ pension, data = base)
+coeftest(dif_educ, vcov = vcovHC(dif_educ, "HC1"))
+
+# 2.4 Pensión por sexo, estrato y edad
+kable(base %>% group_by(mujer) %>% dplyr::summarise(n = n(), pct = 100 * mean(pension)), digits = 1)
+kable(base %>% group_by(estrato) %>% dplyr::summarise(n = n(), pct = 100 * mean(pension)), digits = 1)
+tab_edad <- base %>%
+  mutate(grupo_edad = cut(edad, c(59, 64, 69, 74, 79, 120),
+                          labels = c("60-64", "65-69", "70-74", "75-79", "80+"))) %>%
+  group_by(grupo_edad) %>%
+  dplyr::summarise(n = n(), pct_pension = 100 * mean(pension))
+kable(tab_edad, digits = 1)
+
+# 2.5 Situación de quienes no tienen pensión
+kable(base %>% group_by(pension) %>%
+        dplyr::summarise(n = n(), pct_trabaja = 100 * mean(trabaja),
+                         pct_ayuda_social = 100 * mean(ayuda_social),
+                         dificultad_mes = mean(dificultad_mes)),
+      digits = 1)
+
+# Gráfico 1 del documento: porcentaje con pensión por nivel educativo en La América
+grafico1 <- ggplot(tab_educ, aes(x = nivel_educ, y = pct_pension)) +
+  geom_col(fill = "steelblue", width = 0.6) +
+  geom_text(aes(label = paste0(round(pct_pension, 1), "%\n(n = ", n, ")")),
+            vjust = -0.3, size = 3.5) +
+  scale_y_continuous(limits = c(0, 100)) +
+  labs(x = "Último nivel educativo aprobado", y = "% con pensión de jubilación") +
+  theme_minimal()
+```
+
+```{r}
+#| label: codigo-4
+#| include: false
+# ---- 3. Comparación con Medellín y grupos de comunas -------------------------
+# 3.1 Envejecimiento: % de personas de 60+ en cada comuna (todas las edades)
+envej <- ecv %>% filter(A.7 <= 16) %>%
+  group_by(comuna = A.7) %>%
+  dplyr::summarise(pct_60mas = 100 * mean(B.6 >= 60), n_personas = n())
+mean(ecv$B.6[ecv$A.7 <= 16] >= 60) * 100     # Medellín (16 comunas)
+
+# 3.2 Indicadores de adultos mayores por comuna
+por_comuna <- am_med %>% group_by(comuna, nombre, grupo, imcv_2024) %>%
+  dplyr::summarise(n = n(), pct_pension = 100 * mean(pension),
+                   educ_media = mean(educ), .groups = "drop") %>%
+  left_join(envej, by = "comuna") %>%
+  arrange(desc(imcv_2024))
+kable(por_comuna, digits = 1)
+
+# 3.3 Indicadores por grupo de comunas y para Medellín
+resumen_grupo <- function(d) {
+  d %>% dplyr::summarise(n = n(),
+                         pct_pension = 100 * mean(pension),
+                         educ_media = mean(educ),
+                         pct_superior = 100 * mean(nivel_educ == "Superior"),
+                         pct_primaria = 100 * mean(nivel_educ == "Primaria o menos"),
+                         edad_media = mean(edad),
+                         pct_mujer = 100 * mean(mujer),
+                         pct_trabaja_sinpension = 100 * mean(trabaja[pension == 0]),
+                         dificultad_mes = mean(dificultad_mes))
+}
+comparacion <- bind_rows(
+  am_med %>% group_by(grupo) %>% resumen_grupo(),
+  am_med %>% resumen_grupo() %>% mutate(grupo = "Medellín")
+) %>%
+  mutate(grupo = factor(grupo, levels = c("La América", "Similares", "Superiores",
+                                          "Menores", "Medellín"))) %>%
+  arrange(grupo)
+kable(comparacion, digits = 1)
+
+# 3.4 Brecha educativa en cada grupo: % con pensión por nivel educativo
+brecha <- bind_rows(
+  am_med %>% group_by(grupo, nivel_educ) %>%
+    dplyr::summarise(n = n(), pct_pension = 100 * mean(pension), .groups = "drop"),
+  am_med %>% group_by(nivel_educ) %>%
+    dplyr::summarise(n = n(), pct_pension = 100 * mean(pension)) %>%
+    mutate(grupo = "Medellín")
+) %>%
+  mutate(grupo = factor(grupo, levels = c("La América", "Similares", "Superiores",
+                                          "Menores", "Medellín")))
+kable(brecha %>% arrange(grupo, nivel_educ), digits = 1)
+
+# Gráfico 2 del documento: IMCV 2024 y cobertura pensional de los adultos mayores por comuna
+grafico2 <- ggplot(por_comuna, aes(x = imcv_2024, y = pct_pension)) +
+  geom_point(aes(colour = grupo), size = 3) +
+  geom_text_repel(aes(label = nombre), size = 2.8, seed = 1) +
+  scale_colour_manual(values = c("La América" = "firebrick", "Similares" = "darkorange",
+                                 "Superiores" = "darkgreen", "Menores" = "grey45")) +
+  labs(x = "IMCV 2024", y = "% de adultos mayores con pensión", colour = "") +
+  theme_minimal() + theme(legend.position = "bottom")
+
+# Gráfico 3 del documento: % con pensión por nivel educativo, La América vs grupos y Medellín
+grafico3 <- ggplot(brecha, aes(x = nivel_educ, y = pct_pension, fill = grupo)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.75) +
+  scale_fill_manual(values = c("La América" = "firebrick", "Similares" = "darkorange",
+                               "Superiores" = "darkgreen", "Menores" = "grey60",
+                               "Medellín" = "steelblue")) +
+  labs(x = "Último nivel educativo aprobado", y = "% con pensión de jubilación", fill = "") +
+  theme_minimal() + theme(legend.position = "bottom")
+```
+
+```{r}
+#| label: codigo-5
+#| include: false
+# ---- 4. Modelos de elección discreta: La América -----------------------------
+# P(pension = 1 | x) = G(b0 + b1 educ + b2 edad + b3 edad^2 + b4 mujer
+#                       + b5 pareja + b6 estrato + b7 migrante)
+formula_m <- pension ~ educ + edad + I(edad^2) + mujer + pareja + estrato + migrante
+
+# 4.1 Modelo de probabilidad lineal (MPL); errores robustos HC1 (tema de MCG)
+mpl <- lm(formula_m, data = base)
+summary(mpl)
+coeftest(mpl, vcov = vcovHC(mpl, "HC1"))
+base$y_est_mpl <- predict(mpl)
+summary(base$y_est_mpl)
+sum(base$y_est_mpl < 0 | base$y_est_mpl > 1)   # predicciones fuera de [0, 1]
+
+# 4.2 Probit (modelo principal)
+probit <- glm(formula_m, data = base, family = binomial(link = "probit"))
+summary(probit)
+base$y_est_p <- predict(probit, type = "response")
+summary(base$y_est_p)
+
+# 4.3 Logit
+logit <- glm(formula_m, data = base, family = binomial(link = "logit"))
+summary(logit)
+
+stargazer(mpl, probit, logit, type = "text", digits = 3)
+```
+
+```{r}
+#| label: codigo-6
+#| include: false
+# ---- 5. Efectos marginales ---------------------------------------------------
+# 5.1 Efecto parcial promedio
+summary(margins(mpl))
+summary(margins(probit))
+summary(margins(logit))
+avg_slopes(probit)
+
+# 5.2 Efecto parcial en el promedio (binarias fijadas en 0 y 1 para mujer)
+slopes(probit, newdata = "mean")
+slopes(probit, variables = "educ",
+       newdata = datagrid(educ = mean(base$educ), edad = mean(base$edad),
+                          mujer = c(0, 1), pareja = 0,
+                          estrato = 4, migrante = 0))
+
+# 5.3 Probabilidad de tener pensión según educación (mujer y hombre de 71 años,
+#     estrato 4, sin pareja, siempre en Medellín)
+prob_educ <- predict(probit,
+                     newdata = data.frame(educ = c(5, 11, 16, 5, 11, 16),
+                                          edad = 71, mujer = c(1, 1, 1, 0, 0, 0),
+                                          pareja = 0, estrato = 4, migrante = 0),
+                     type = "response")
+prob_educ
+
+# 5.4 Gráfico 4: curvas de probabilidad (como en el ejercicio de clase)
+newdata <- data.frame(educ = seq(from = 0, to = 18, length.out = 19),
+                      edad = mean(base$edad), mujer = 1, pareja = 0,
+                      estrato = 4, migrante = 0)
+newdata[, c("p_mujer", "se_m")] <- predict(probit, newdata, type = "response",
+                                           se.fit = TRUE)[-3]
+newdata$mujer <- 0
+newdata[, c("p_hombre", "se_h")] <- predict(probit, newdata, type = "response",
+                                            se.fit = TRUE)[-3]
+newdata$m_lb <- newdata$p_mujer  - qt(0.025, 19 - 1, lower.tail = FALSE) * newdata$se_m
+newdata$m_ub <- newdata$p_mujer  + qt(0.025, 19 - 1, lower.tail = FALSE) * newdata$se_m
+newdata$h_lb <- newdata$p_hombre - qt(0.025, 19 - 1, lower.tail = FALSE) * newdata$se_h
+newdata$h_ub <- newdata$p_hombre + qt(0.025, 19 - 1, lower.tail = FALSE) * newdata$se_h
+
+grafico4 <- ggplot(newdata) +
+  geom_ribbon(aes(x = educ, ymin = h_lb, ymax = h_ub), fill = "steelblue", alpha = 0.15) +
+  geom_ribbon(aes(x = educ, ymin = m_lb, ymax = m_ub), fill = "firebrick", alpha = 0.15) +
+  geom_line(aes(x = educ, y = p_hombre, colour = "Hombre"), linewidth = 1) +
+  geom_line(aes(x = educ, y = p_mujer, colour = "Mujer"), linewidth = 1) +
+  scale_colour_manual(values = c("Hombre" = "steelblue", "Mujer" = "firebrick")) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = "Años de educación", y = "Prob(pensión = 1)", colour = "") +
+  theme_minimal() + theme(legend.position = "bottom")
+```
+
+```{r}
+#| label: codigo-7
+#| include: false
+# ---- 6. Bondad de ajuste -----------------------------------------------------
+probit_r <- glm(pension ~ 1, data = base, family = binomial(link = "probit"))
+1 - logLik(probit) / logLik(probit_r)          # pseudo R2 de McFadden
+pR2(probit)
+lrtest(probit_r, probit)                        # razón de verosimilitud
+hitmiss(probit)                                 # umbral 0.5
+hitmiss(probit, k = mean(base$pension))         # umbral = proporción de éxitos
+HLtest(probit)                                  # Hosmer-Lemeshow (H0: ajusta bien)
+hoslem.test(base$pension, fitted(probit))
+# Gráfico 5: curva ROC (lroc, como en el ejercicio de clase); se dibuja en el documento
+auc <- lroc(probit, auc.coords = c(.1, .1))
+auc["auc"]
+```
+
+```{r}
+#| label: codigo-8
+#| include: false
+# ---- 7. Robustez (La América) -----------------------------------------------
+# 7.1 y alternativa: monto de pensión > 0 (excluye jubilados sin monto)
+probit_monto <- glm(update(formula_m, pension_monto ~ .), data = base,
+                    family = binomial(link = "probit"))
+summary(probit_monto)
+summary(margins(probit_monto, variables = "educ"))
+
+# 7.2 Educación por niveles (base: primaria o menos)
+probit_niv <- glm(pension ~ nivel_educ + edad + I(edad^2) + mujer + pareja +
+                    estrato + migrante, data = base, family = binomial(link = "probit"))
+summary(probit_niv)
+summary(margins(probit_niv, variables = "nivel_educ"))
+```
+
+```{r}
+#| label: codigo-9
+#| include: false
+# ---- 8. El mismo probit en Medellín y en cada grupo de comunas ---------------
+d_sim <- am_med %>% filter(grupo == "Similares")
+d_sup <- am_med %>% filter(grupo == "Superiores")
+d_men <- am_med %>% filter(grupo == "Menores")
+
+probit_sim <- glm(formula_m, data = d_sim, family = binomial(link = "probit"))
+probit_sup <- glm(formula_m, data = d_sup, family = binomial(link = "probit"))
+probit_men <- glm(formula_m, data = d_men, family = binomial(link = "probit"))
+probit_med <- glm(formula_m, data = am_med, family = binomial(link = "probit"))
+
+stargazer(probit, probit_sim, probit_sup, probit_men, probit_med, type = "text",
+          digits = 3, column.labels = c("La América", "Similares", "Superiores",
+                                        "Menores", "Medellín"))
+
+# Efecto parcial promedio de la educación en cada muestra
+ape_fila <- function(modelo, grupo) {
+  s <- summary(margins(modelo, variables = "educ"))
+  tibble(grupo = grupo, n = nobs(modelo), ape = s$AME, se = s$SE,
+         p = s$p, lb = s$lower, ub = s$upper)
+}
+ape_educ <- bind_rows(ape_fila(probit, "La América"), ape_fila(probit_sim, "Similares"),
+                      ape_fila(probit_sup, "Superiores"), ape_fila(probit_men, "Menores"),
+                      ape_fila(probit_med, "Medellín"))
+kable(ape_educ, digits = 4)
+
+# Efecto parcial promedio de todas las variables en Medellín
+summary(margins(probit_med))
+
+# Gráfico 6 del documento: efecto parcial promedio de un año de educación por grupo
+grafico6 <- ape_educ %>%
+  mutate(grupo = factor(grupo, levels = rev(ape_educ$grupo))) %>%
+  ggplot(aes(x = 100 * ape, y = grupo)) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_errorbarh(aes(xmin = 100 * lb, xmax = 100 * ub), height = 0.2) +
+  geom_point(size = 3, colour = "firebrick") +
+  labs(x = "Efecto de un año más de educación (puntos porcentuales)", y = "") +
+  theme_minimal()
+
+# 8.3 ¿El efecto de la educación en La América es distinto al del resto de la ciudad?
+# MPL con interacción educ x La América (MCO con errores robustos HC1)
+am_med <- am_med %>% mutate(la_america = as.integer(comuna == 12))
+mpl_inter <- lm(pension ~ educ * la_america + edad + I(edad^2) + mujer + pareja +
+                  estrato + migrante, data = am_med)
+coeftest(mpl_inter, vcov = vcovHC(mpl_inter, "HC1"))
+```
+
+```{r}
+#| label: codigo-10
+#| include: false
+# ---- 9. Cuadros y cifras que se citan en el documento ------------------------
+# Funciones para escribir los números con coma decimal en el documento
+f1 <- function(x) format(round(x, 1), nsmall = 1, decimal.mark = ",")
+f2 <- function(x) format(round(x, 2), nsmall = 2, decimal.mark = ",")
+f3 <- function(x) format(round(x, 3), nsmall = 3, decimal.mark = ",")
+pct <- function(x) f1(100 * x)
+
+# 9.1 Tamaños de muestra y conteo de los jubilados sin monto (sección 3.2)
+n_c12   <- nrow(ecv %>% filter(A.7 == 12))
+n_am    <- nrow(ecv %>% filter(A.7 == 12, B.6 >= 60))
+n_base  <- nrow(base)
+n_excl  <- n_am - n_base                                   # sin nivel educativo
+n_am_med <- nrow(ecv %>% filter(A.7 <= 16, B.6 >= 60))
+n_pens  <- sum(base$pension)
+n_pens_monto      <- sum(base$pension == 1 & base$pension_monto %in% 1)
+n_pens_sinmonto   <- sum(base$pension == 1 & is.na(base$pension_monto))
+n_nopens_sinmonto <- sum(base$pension == 0 & is.na(base$pension_monto))
+pct_am_muestra <- 100 * mean(ecv$B.6[ecv$A.7 == 12] >= 60)
+# Cifras de contexto con el factor de expansión de personas (FEP) de la ECV 2025.
+# Solo se usan para describir la población (introducción); los modelos no se ponderan.
+ecv_c <- ecv %>% filter(A.7 <= 16)                                  # 16 comunas
+pob_med   <- sum(ecv_c$FEP)                                         # habitantes de las 16 comunas
+pob_la    <- sum(ecv_c$FEP[ecv_c$A.7 == 12])                        # habitantes de La América
+am_la     <- sum(ecv_c$FEP[ecv_c$A.7 == 12 & ecv_c$B.6 >= 60])      # 60+ en La América
+am_med_pob <- sum(ecv_c$FEP[ecv_c$B.6 >= 60])                       # 60+ en Medellín
+sh_am_la  <- 100 * am_la / pob_la                                   # % de 60+ en La América
+sh_am_med <- 100 * am_med_pob / pob_med                             # % de 60+ en Medellín
+pens_la_exp  <- 100 * sum(ecv_c$FEP[ecv_c$A.7 == 12 & ecv_c$B.6 >= 60 & ecv_c$H.31 == 7]) / am_la
+pens_med_exp <- 100 * sum(ecv_c$FEP[ecv_c$B.6 >= 60 & ecv_c$H.31 == 7]) / am_med_pob
+sh_am_com <- sapply(1:16, function(k) 100 * sum(ecv_c$FEP[ecv_c$A.7 == k & ecv_c$B.6 >= 60]) / sum(ecv_c$FEP[ecv_c$A.7 == k]))
+rank_am_la <- rank(-sh_am_com)[12]                                  # puesto de La América entre las 16 comunas
+sh_am_max_otra <- max(sh_am_com[-12])                               # mayor % de 60+ de otra comuna
+miles <- function(x) format(round(x, -2), big.mark = ".", decimal.mark = ",", scientific = FALSE)
+imcv_la   <- imcv$imcv_2024[imcv$comuna == 12]
+imcv_txt  <- function(k) f2(imcv$imcv_2024[imcv$comuna == k])
+n_menores <- sum(imcv$grupo == "Menores")
+max_imcv_menores <- max(imcv$imcv_2024[imcv$grupo == "Menores"])
+
+# 9.2 Cuadro 1: estadísticas descriptivas de La América
+cuadro1 <- base %>%
+  dplyr::select(pension, educ, edad, mujer, pareja, estrato, migrante) %>%
+  pivot_longer(everything(), names_to = "Variable") %>%
+  group_by(Variable) %>%
+  dplyr::summarise(Media = mean(value), `Desv. est.` = sd(value),
+                   Mín = min(value), Máx = max(value)) %>%
+  mutate(Variable = recode(Variable, pension = "Pensión (1 = sí)",
+                           educ = "Años de educación", edad = "Edad",
+                           mujer = "Mujer (1 = sí)", pareja = "Vive en pareja (1 = sí)",
+                           estrato = "Estrato", migrante = "Migrante (1 = sí)")) %>%
+  arrange(match(Variable, c("Pensión (1 = sí)", "Años de educación", "Edad",
+                            "Mujer (1 = sí)", "Vive en pareja (1 = sí)", "Estrato",
+                            "Migrante (1 = sí)")))
+educ_pens   <- mean(base$educ[base$pension == 1])
+educ_nopens <- mean(base$educ[base$pension == 0])
+pens_hombre <- 100 * mean(base$pension[base$mujer == 0])
+pens_mujer  <- 100 * mean(base$pension[base$mujer == 1])
+pens_estrato <- base %>% group_by(estrato) %>% dplyr::summarise(pct = 100 * mean(pension))
+pens_e4 <- pens_estrato$pct[pens_estrato$estrato == 4]
+pens_e5 <- pens_estrato$pct[pens_estrato$estrato == 5]
+
+# 9.3 Cuadro 2: situación de los adultos mayores con y sin pensión
+cuadro2 <- base %>% group_by(pension) %>%
+  dplyr::summarise(n = n(), `Trabaja (%)` = 100 * mean(trabaja),
+                   `Recibe ayuda social (%)` = 100 * mean(ayuda_social),
+                   `Facilidad para llegar a fin de mes (0-10)` = mean(dificultad_mes)) %>%
+  mutate(pension = ifelse(pension == 1, "Con pensión", "Sin pensión")) %>%
+  dplyr::rename(Grupo = pension) %>% arrange(desc(Grupo))
+
+# 9.4 Cuadro 3: comparación con grupos de comunas y Medellín
+cuadro3 <- comparacion %>%
+  transmute(Grupo = as.character(grupo), n,
+            `Pensión (%)` = pct_pension, `Años educ.` = educ_media,
+            `Superior (%)` = pct_superior, `Primaria o menos (%)` = pct_primaria,
+            `Mujeres (%)` = pct_mujer,
+            `Trabaja sin pensión (%)` = pct_trabaja_sinpension)
+cmp_val <- function(g, col) cuadro3[[col]][cuadro3$Grupo == g]
+brecha_val <- function(g, nivel) brecha$pct_pension[brecha$grupo == g & brecha$nivel_educ == nivel]
+
+# 9.5 Cuadro 4: efectos parciales promedio en La América (MPL, probit, logit)
+ame_mpl <- summary(margins(mpl, vcov = vcovHC(mpl, "HC1")))
+ame_pro <- summary(margins(probit))
+ame_log <- summary(margins(logit))
+g_ame <- function(s, v) s$AME[s$factor == v]
+estrellas <- function(p) ifelse(p < 0.01, "***", ifelse(p < 0.05, "**", ifelse(p < 0.1, "*", "")))
+celda <- function(s, v) paste0(f3(s$AME[s$factor == v]), estrellas(s$p[s$factor == v]),
+                               " (", f3(s$SE[s$factor == v]), ")")
+invisible(capture.output(pr2_p <- pR2(probit), pr2_l <- pR2(logit)))
+vs <- c("educ", "edad", "mujer", "pareja", "estrato", "migrante")
+cuadro4 <- bind_rows(
+  tibble(Variable = c("Años de educación", "Edad", "Mujer", "Vive en pareja",
+                      "Estrato", "Migrante"),
+         MPL = sapply(vs, function(v) celda(ame_mpl, v)),
+         Probit = sapply(vs, function(v) celda(ame_pro, v)),
+         Logit = sapply(vs, function(v) celda(ame_log, v))),
+  tibble(Variable = c("Observaciones", "R2 (MPL) / pseudo R2 de McFadden"),
+         MPL = c(as.character(nobs(mpl)), f3(summary(mpl)$r.squared)),
+         Probit = c(as.character(nobs(probit)), f3(pr2_p["McFadden"])),
+         Logit = c(as.character(nobs(logit)), f3(pr2_l["McFadden"]))))
+ape_e <- g_ame(ame_pro, "educ")
+
+# 9.6 Cifras de bondad de ajuste (sección 6 del código)
+lr  <- lrtest(probit_r, probit)
+invisible(capture.output(hm5 <- hitmiss(probit),
+                         hmk <- hitmiss(probit, k = mean(base$pension))))
+pct_nulo <- 100 * max(mean(base$pension), 1 - mean(base$pension))  # acierto del modelo sin x
+hl  <- hoslem.test(base$pension, fitted(probit))
+auc_v <- auc$auc
+n_fuera <- sum(base$y_est_mpl < 0 | base$y_est_mpl > 1)
+
+# 9.7 Cuadro 5: robustez
+ape_m <- summary(margins(probit_monto, variables = "educ"))
+ape_n <- summary(margins(probit_niv, variables = "nivel_educ"))
+cuadro5 <- tibble(
+  Especificación = c("Modelo principal: pensión (jubilado), años de educación",
+                     "Pensión con monto reportado > 0 (sin los jubilados sin monto)",
+                     "Educación por niveles: secundaria/media vs. primaria o menos",
+                     "Educación por niveles: superior vs. primaria o menos"),
+  Efecto = c(f3(ape_e), f3(ape_m$AME), f3(ape_n$AME[1]), f3(ape_n$AME[2])),
+  `Error est.` = c(f3(ame_pro$SE[ame_pro$factor == "educ"]), f3(ape_m$SE),
+                   f3(ape_n$SE[1]), f3(ape_n$SE[2])),
+  p = c(ame_pro$p[ame_pro$factor == "educ"], ape_m$p, ape_n$p),
+  n = c(nobs(probit), nobs(probit_monto), nobs(probit_niv), nobs(probit_niv)))
+todos_sig_1 <- all(cuadro5$p < 0.01)
+cuadro5 <- cuadro5 %>% dplyr::select(-p)
+
+# 9.8 Cuadro 6: efecto de la educación por grupo de comunas
+cuadro6 <- ape_educ %>%
+  transmute(Muestra = grupo, n,
+            `Efecto (p.p.)` = f2(100 * ape), `Error est. (p.p.)` = f2(100 * se),
+            `IC 95 %` = paste0("[", f2(100 * lb), " ; ", f2(100 * ub), "]"))
+ape_grupo <- function(g) 100 * ape_educ$ape[ape_educ$grupo == g]
+ct_inter <- coeftest(mpl_inter, vcov = vcovHC(mpl_inter, "HC1"))
+b_inter  <- ct_inter["educ:la_america", 1]
+p_inter  <- ct_inter["educ:la_america", 4]
+ame_med  <- summary(margins(probit_med))
+
+# 9.9 Cuadro 7 (anexo): coeficientes de MPL (errores HC1), probit y logit
+se_mpl_hc1 <- sqrt(diag(vcovHC(mpl, "HC1")))
+stargazer(mpl, probit, logit, type = "text", digits = 3,
+          se = list(se_mpl_hc1, NULL, NULL),
+          column.labels = c("MPL", "Probit", "Logit"))
+```
+
+```{r}
+#| label: codigo-11
+#| include: false
+# ---- 10. Trabajo de campo: entrevistas a habitantes de La América (bono) ------
+# Respuestas de la encuesta corta (una fila por entrevistado); las evidencias
+# fotográficas se entregan aparte. Este bloque prepara el cuadro y las citas.
+ent <- data.frame(
+  id = c(1, 2, 3),
+  fecha = c("2026-10-20", "2026-10-20", "2026-10-20"),
+  barrio = c("La América", "La América", "La América"),
+  sexo = c("Masculino", "Femenino", "Femenino"),
+  edad = c(60, 78, 80),
+  educacion = c("Bachillerato incompleto", "Primaria incompleta", "Universitaria completa"),
+  pensionado = c("No", "No", "Sí"),
+  ocupacion_actual = c("Instructor independiente de tenis", "Ama de casa", "Pensionada"),
+  p2_trabajo_formal = c("No", "No", "Sí"),
+  ingreso_mes_min = as.integer(c(1500000, 500000, 3000000)),
+  ingreso_mes_max = as.integer(c(2500000, 500000, 3000000)),
+  ingreso_dia_min = c(50000L, NA, NA),
+  ingreso_dia_max = c(300000L, NA, NA),
+  p4_educacion = c("Educación media incompleta", "Básica primaria incompleta", "Educación superior"),
+  p5_ayudas = c("No", "Sí", "No"),
+  cita_trabajo = c("Yo trabajo dando clases particulares de tenis. No tengo un contrato formal, sino que las personas me pagan por cada clase que doy.", "Me encargo de todas las labores del hogar, ayudando a mis nietos y mi hija en su dia a dia para que su vida sea mas facil y puedan salir adelante.", ""),
+  cita_ingresos = c("Hay días en los que me va bien y puedo ganar unos $80.000, pero otros días tengo menos alumnos y gano mucho menos.", "Mis hijos me da una ayuda mensual para yo poder cubrir gastos extras que tenga, y lo que sea para mi cuidado y mantenimiento personal me lo pagan ellos.", "Aunque tengo una entrada fija por la pensión, debo organizar bien mis gastos para que me alcance el dinero."),
+  cita_educacion = c("", "Yo estudié hasta primaria, pero no pude seguir estudiando porque tenía que ayudar en la casa y mi papa era muy machista y me sacó de la escuela.", "Tuve la oportunidad de estudiar en la universidad y eso me ayudó a conseguir mejores oportunidades laborales. Ahora tengo casa propia y vivo de mi pension sola."),
+  cita_pension = c("No tengo pensión. Me ha tocado trabajar por mi cuenta y no siempre he podido cotizar para pensionarme.", "No tengo pensión porque siempre he trabajado en cosas informales.", "Actualmente recibo mi pensión, que me ayuda a cubrir mis gastos mensuales."),
+  cita_ayudas = c("No recibo ayudas del Gobierno; mis gastos los cubro con lo que gano trabajando. Me ayuda que en mi juventud ahorre y tengo vivienda propia.", "", "No dependo de ayudas económicas porque cuento con mi pensión."),
+  stringsAsFactors = FALSE)
+n_ent     <- nrow(ent)
+n_ent_sin <- sum(ent$pensionado == "No")                 # sin pensión
+n_ent_formal_no <- sum(ent$p2_trabajo_formal == "No")    # sin trabajo formal
+n_ent_ayuda     <- sum(ent$p5_ayudas == "Sí")            # reciben alguna ayuda
+cuadro8 <- data.frame(
+  Código = paste0("E", ent$id), Sexo = ent$sexo, Edad = ent$edad,
+  `Nivel educativo` = ent$educacion, Pensión = ent$pensionado,
+  `Ocupación actual` = ent$ocupacion_actual,
+  `Trabajo formal` = ent$p2_trabajo_formal,
+  `Ingreso mensual ($)` = ifelse(ent$ingreso_mes_min == ent$ingreso_mes_max,
+    format(ent$ingreso_mes_min, big.mark = ".", decimal.mark = ","),
+    paste(format(ent$ingreso_mes_min, big.mark = ".", decimal.mark = ","), "a",
+          format(ent$ingreso_mes_max, big.mark = ".", decimal.mark = ","))),
+  `Recibe ayudas` = ent$p5_ayudas, check.names = FALSE)
+
+# Imprime las citas textuales de un entrevistado (una por tema), para el documento
+citas_entrevistado <- function(i) {
+  temas <- c(cita_trabajo = "Sobre su trabajo", cita_ingresos = "Sobre sus ingresos",
+             cita_educacion = "Sobre su educación", cita_pension = "Sobre la pensión",
+             cita_ayudas = "Sobre las ayudas económicas")
+  for (col in names(temas))
+    if (nzchar(ent[[col]][i]))
+      cat("- ", temas[[col]], ": «", ent[[col]][i], "»\n", sep = "")
+  cat("\n")
+}
+```
+
+# Introducción
+
+Medellín está envejeciendo y la Comuna 12 – La América es de las comunas donde más se nota. Según la ECV 2025, y usando los factores de expansión de la encuesta, en La América viven cerca de `r miles(pob_la)` personas, de las cuales unas `r miles(am_la)` tienen 60 años o más, es decir, el `r f1(sh_am_la)` % de la población, frente al `r f1(sh_am_med)` % del conjunto de las 16 comunas. Solo hay una comuna con una proporción mayor (`r f1(sh_am_max_otra)` %), así que La América es la segunda comuna más envejecida de la ciudad. En toda Medellín hay unos 459.000 mayores de 60 años y se proyecta que en 2035 serán el 22 % de la población (Medellín Cómo Vamos, 2026; El Colombiano, 2026). En el Plan de Desarrollo Local, la comunidad de La América señaló como problemas del adulto mayor los bajos ingresos, la dependencia económica y el abandono familiar (Alcaldía de Medellín, 2019). Llegar a la vejez sin un ingreso propio y estable es, por lo tanto, un problema concreto para una parte grande de la comuna.
+
+En Colombia, la principal fuente de ese ingreso es la pensión, y la cobertura sigue siendo baja: el Ministerio del Trabajo la ubicó en apenas el 24 % de los adultos mayores (Infobae, 2025), y en Antioquia solo el 31 % de las personas mayores recibe ingresos por pensión (Medellín Cómo Vamos, 2026). Con la ECV 2025, el `r f1(pens_med_exp)` % de los mayores de 60 años de las 16 comunas de Medellín se declara jubilado, y en La América el `r f1(pens_la_exp)` %. No tener pensión se asocia con más pobreza: según el DANE, en 2025 la pobreza monetaria fue de 38,8 % en los hogares cuyo jefe no está afiliado a pensión y de 7,3 % en los que sí lo está (DANE, 2026a). La literatura explica la baja cobertura sobre todo por la informalidad laboral: para pensionarse hay que haber cotizado muchos años en un empleo formal, y quienes tienen menos educación tienen menos acceso a ese tipo de empleo (Santa María et al., 2010; Bosch, Melguizo y Pagés, 2013; Galvis-Aponte, 2024). Hoy la informalidad sigue siendo alta: 55,3 % de los ocupados del país y 41,1 % en las 13 principales ciudades y áreas metropolitanas en el trimestre diciembre de 2025 – febrero de 2026 (DANE, 2026b).
+
+El objetivo de este trabajo es medir cuánto cambia la probabilidad de que un adulto mayor de La América tenga pensión de jubilación cuando tiene más años de educación, y comparar ese resultado con el de Medellín y con el de comunas con condiciones de vida menores, similares y superiores. Para esto usamos la Encuesta de Calidad de Vida (ECV) de Medellín 2025, con las personas de 60 años o más de las 16 comunas de la ciudad, y estimamos modelos de elección discreta (probabilidad lineal, probit y logit), que son los vistos en el curso para variables dependientes binarias.
+
+El documento tiene seis secciones además de esta introducción. La sección 2 revisa la literatura. La sección 3 describe los datos, explica las decisiones que tomamos para construir las variables y presenta la evidencia descriptiva, incluyendo la comparación de La América con la ciudad y con los grupos de comunas. La sección 4 plantea el modelo econométrico. La sección 5 presenta los resultados, la sección 6 las conclusiones e implicaciones de política, y al final están las referencias.
+
+# Revisión de literatura
+
+**El marco teórico: capital humano y empleo formal.** La teoría del capital humano plantea que la educación aumenta la productividad de las personas y, con ella, sus ingresos y sus oportunidades de empleo (Becker, 1964; Mincer, 1974). En un mercado laboral como el colombiano, una parte importante de esas oportunidades es poder entrar al sector formal, que es donde se cotiza a pensión. Santa María et al. (2010) muestran que el mercado laboral colombiano está segmentado y que solo los trabajadores con educación superior completa enfrentan un mercado no segmentado; los menos educados quedan más expuestos a la informalidad y, por eso, tienen menos acceso a la afiliación pensional. La relación que estudiamos, entonces, no es que la educación "dé" una pensión, sino que la educación aumenta la probabilidad de haber tenido una historia laboral formal larga, que es el requisito para pensionarse.
+
+**La cobertura pensional en Colombia.** Los requisitos del sistema general de pensiones (Ley 100 de 1993, modificada por la Ley 797 de 2003) son 57 años para las mujeres y 62 para los hombres, y 1.300 semanas cotizadas en el régimen de prima media. Con estos requisitos y con la informalidad del país, la cobertura es baja. El Ministerio del Trabajo la estimó en 24 % en 2025 (Infobae, 2025), y para Antioquia, Medellín Cómo Vamos (2026) reporta que solo el 31 % de las personas mayores recibe ingresos por pensión y que cerca de siete de cada diez de los mayores que trabajan lo hacen en la informalidad. La informalidad que explica este resultado sigue siendo alta: el DANE (2026b) reporta que el 55,3 % de los ocupados del país era informal entre diciembre de 2025 y febrero de 2026, y el 41,1 % en las 13 ciudades y áreas metropolitanas, donde se incluye Medellín. Las cifras de cobertura no coinciden exactamente entre fuentes porque cada una define de forma distinta la población (mayores de 60, de 65 o en edad de pensión) y el tipo de pensión.
+
+**Educación, informalidad y desigualdad en el acceso.** Santa María et al. (2010) también encuentran que quienes ganan menos tienen mucha menos afiliación al sistema pensional, y Becerra et al. (2022) señalan que la mayor escolaridad se asocia con más empleo formal y, por esa vía, con más cotización. La evidencia más reciente va en la misma dirección: Galvis-Aponte (2024), del Banco de la República, usa la GEIH de 23 áreas metropolitanas entre 2010 y 2023 y estima un probit en el que la educación se trata como endógena con variables instrumentales; encuentra que cada año adicional de educación reduce la probabilidad de ser informal en más de dos puntos porcentuales. Las consecuencias de no cotizar se ven en la pobreza: en 2025 la pobreza monetaria fue de 38,8 % en los hogares cuyo jefe no está afiliado a pensión y de 7,3 % cuando sí lo está, y en Medellín fue de 16,7 % (DANE, 2026a).
+
+**Contexto de política.** La Ley 2381 de 2024 (reforma pensional) crea un pilar solidario, con una renta básica para adultos mayores pobres o vulnerables que no requiere semanas cotizadas. La Corte Constitucional declaró exequible la mayor parte de la ley, devolvió algunos artículos a la Cámara de Representantes y fijó su entrada en vigencia para el 1 de abril de 2027 (Vanguardia, 2026). Mientras tanto, el programa Colombia Mayor paga $230.000 mensuales a adultos mayores vulnerables sin pensión, y su ciclo de pago de diciembre de 2025 – enero de 2026 cubrió a 1.727.334 personas (Prosperidad Social, 2025). Por eso, la cobertura que medimos con datos de 2025 corresponde todavía al sistema anterior.
+
+**Aporte de este trabajo.** La mayoría de los estudios miden la cobertura a nivel nacional o departamental. Este trabajo aporta evidencia a nivel de comuna, para La América, una de las comunas más envejecidas de Medellín, y la compara con el resto de la ciudad usando la misma encuesta y el mismo modelo. Así se puede ver si la relación entre educación y pensión que describe la literatura también aparece en la comuna, y si es más fuerte o más débil que en comunas con mejores o peores condiciones de vida.
+
+# Datos y evidencia descriptiva
+
+## Fuente de información
+
+Usamos la Encuesta de Calidad de Vida (ECV) de Medellín 2025, del Departamento Administrativo de Planeación de la Alcaldía de Medellín. Es una encuesta anual por muestreo aleatorio, representativa para las 16 comunas y los 5 corregimientos; en 2025 encuestó 6.948 viviendas, 6.955 hogares y 20.408 personas, durante el último trimestre del año (Alcaldía de Medellín, 2025). La unidad de análisis son las personas. Como pide el reto, solo usamos las comunas y excluimos los corregimientos.
+
+Además de la ECV, usamos dos fuentes oficiales para el contexto: el Índice Multidimensional de Condiciones de Vida (IMCV) 2024 por comuna, publicado por la Alcaldía de Medellín, que usamos para clasificar las comunas en grupos de comparación, y el Plan de Desarrollo Local de la Comuna 12 (Alcaldía de Medellín, 2019), del que tomamos solo lo que la comunidad dijo sobre los problemas del adulto mayor. Las cifras nacionales de pobreza e informalidad vienen de los boletines del DANE de 2026.
+
+## Muestra y decisiones para construir las variables
+
+En la ECV 2025 hay `r n_c12` personas encuestadas en La América, de las cuales `r n_am` tienen 60 años o más. En toda la ciudad (16 comunas) hay `r n_am_med` adultos mayores. A continuación explicamos cada decisión que tomamos y por qué.
+
+1. **Población de estudio: personas de 60 años o más.** Tomamos los 60 años porque es la edad con la que la ley y la literatura definen a la persona mayor en Colombia (Becerra et al., 2022, también trabajan con mayores de 60), y porque a esa edad ya se cumplieron o están por cumplirse los requisitos de edad para pensionarse (57 años las mujeres y 62 los hombres). La edad y su cuadrado entran como controles para capturar que algunos hombres entre 60 y 61 años todavía no tienen la edad de pensión.
+
+2. **Variable dependiente (pensión).** La ECV pregunta la situación laboral actual de cada persona (pregunta H.31). Definimos *pensión* = 1 si la persona responde "jubilado o jubilado anticipado" y 0 en otro caso. Con esta definición, `r n_pens` de los `r n_base` adultos mayores de La América tienen pensión (`r pct(mean(base$pension))` %). La encuesta también pregunta cuánto recibió por pensión en 2024 (H.20). De los `r n_pens` pensionados, `r n_pens_monto` reportaron un monto mayor que cero y `r n_pens_sinmonto` dijeron que no saben o no respondieron el monto (además, `r n_nopens_sinmonto` personas que hoy no se declaran jubiladas tampoco respondieron el monto). **Decidimos contar a esos `r n_pens_sinmonto` jubilados como pensionados**, porque declararon estar jubilados y lo que falta es solo el valor de la mesada, no la condición. Como esta decisión podría cambiar los resultados, en la sección 5.3 estimamos el modelo con una variable alternativa, *pensión (monto)*, que vale 1 solo si se reportó un monto positivo y deja por fuera a quienes no lo reportaron.
+
+3. **Variable explicativa principal (años de educación).** La ECV pregunta el último nivel educativo aprobado (E.6) y el grado o año cursado (E.8), pero E.8 está en cero para casi todos los adultos mayores, así que no se puede calcular el número exacto de años. Por eso asignamos a cada nivel los años normativos del sistema educativo colombiano: ninguno o preescolar = 0, primaria = 5, secundaria = 9, bachillerato o media técnica = 11, tecnológico = 14, universitario = 16, especialización = 17, maestría = 18 y doctorado = 21. En la sección 5.3 también estimamos el modelo con la educación por niveles (primaria o menos, secundaria/media y superior), para no depender de esta asignación.
+
+4. **Observaciones excluidas.** `r n_excl` adultos mayores de La América no saben su nivel educativo (E.6 = "no sabe"), así que salen de la muestra. La muestra final de la comuna es de **`r n_base` personas**, y la de la ciudad es de `r nrow(am_med)`.
+
+5. **Controles.** Incluimos variables que, según la literatura y las reglas del sistema, afectan la probabilidad de pensionarse y pueden estar relacionadas con la educación: la edad y su cuadrado (requisitos de edad y diferencias entre generaciones), ser mujer (edad de pensión distinta y trayectorias laborales más cortas o interrumpidas por el trabajo de cuidado), vivir en pareja (casado o en unión libre), el estrato de la vivienda (como medida del nivel socioeconómico del hogar) y ser migrante, es decir, no haber vivido siempre en Medellín, porque quienes llegaron de otros municipios pueden haber trabajado parte de su vida en mercados laborales más informales o rurales.
+
+6. **Sin factores de expansión en los modelos.** La ECV trae factores de expansión (la variable FEP para las personas) para pasar de la muestra a la población. Siguiendo la metodología trabajada en el curso, todos los cuadros, gráficos y modelos de las secciones 3 a 5 se calculan con la muestra, sin ponderar, y por eso describen a los encuestados y no son estimaciones oficiales de población. La única excepción son las cifras de contexto de la introducción (habitantes de La América, porcentaje de mayores de 60 años y porcentaje de jubilados), que sí usan el factor de expansión, porque ahí queremos describir a la población y no a la muestra; están calculadas en la sección 9.1 del código. La diferencia importa: en la muestra, el `r f1(pct_am_muestra)` % de los encuestados de La América tiene 60 años o más, frente al `r f1(sh_am_la)` % de la población que estima la ECV con los factores de expansión.
+
+7. **Grupos de comparación.** Para comparar La América con comunas de condiciones menores, similares y superiores usamos el IMCV 2024 oficial, en lugar de definir los grupos nosotros. La América tiene un IMCV de `r imcv_txt(12)`. Las *superiores* son las dos comunas con un IMCV mayor (El Poblado, `r imcv_txt(14)`, y Laureles-Estadio, `r imcv_txt(11)`); las *similares* son las tres que le siguen (Belén, `r imcv_txt(16)`; La Candelaria, `r imcv_txt(10)`; y Guayabal, `r imcv_txt(15)`); y las *menores* son las otras `r n_menores` comunas, cuyo IMCV es como máximo `r imcv_txt(5)`.
+
+## Estadísticas descriptivas de La América
+
+```{r}
+#| label: tbl-desc
+#| tbl-cap: "Estadísticas descriptivas de los adultos mayores de La América"
+# Cuadro 1: objeto cuadro1, sección 9.2 del código
+kable(cuadro1, digits = 2, booktabs = TRUE, format.args = list(decimal.mark = ","))
+```
+\vspace{-0.3cm}
+\footnotesize Fuente: cálculos propios a partir de la ECV Medellín 2025. n = `r n_base`. \normalsize
+
+El @tbl-desc muestra que el `r pct(mean(base$pension))` % de los adultos mayores de La América tiene pensión, es decir, que más de la mitad (`r pct(1 - mean(base$pension))` %) no la tiene. El adulto mayor promedio de la muestra tiene `r f1(mean(base$edad))` años y `r f1(mean(base$educ))` años de educación, que equivale a un poco menos que el bachillerato completo. El `r pct(mean(base$mujer))` % son mujeres, el `r pct(mean(base$pareja))` % vive en pareja, el estrato promedio es `r f1(mean(base$estrato))` y el `r pct(mean(base$migrante))` % no ha vivido siempre en Medellín.
+
+```{r}
+#| label: fig-educ
+#| fig-cap: "Porcentaje de adultos mayores con pensión según nivel educativo, La América"
+#| fig-align: center
+#| fig-width: 6
+#| fig-height: 4
+#| out-width: "75%"
+# Gráfico 1: objeto grafico1, sección 2.5 del código
+grafico1
+```
+\vspace{-0.3cm}
+\begin{center}\footnotesize Fuente: cálculos propios a partir de la ECV Medellín 2025.\end{center}
+
+El @fig-educ muestra la relación que queremos estudiar. Entre quienes tienen primaria o menos, solo el `r f1(tab_educ$pct_pension[1])` % tiene pensión; con secundaria o media el porcentaje sube a `r f1(tab_educ$pct_pension[2])` %, y con educación superior llega a `r f1(tab_educ$pct_pension[3])` %. Visto desde la otra variable, los pensionados tienen en promedio `r f1(educ_pens)` años de educación y los no pensionados `r f1(educ_nopens)`; la diferencia, de `r f1(coef(dif_educ)[2])` años, es estadísticamente significativa (regresión de la educación sobre la dummy de pensión con errores robustos, p < 0,001).
+
+Tener pensión también cambia con la edad. Entre las personas de 60 a 64 años, solo el `r f1(tab_edad$pct_pension[1])` % (`r round(tab_edad$n[1]*tab_edad$pct_pension[1]/100)` de `r tab_edad$n[1]`) está pensionado, mientras que entre las de 75 a 79 años lo está el `r f1(tab_edad$pct_pension[4])` % (`r round(tab_edad$n[4]*tab_edad$pct_pension[4]/100)` de `r tab_edad$n[4]`). Esto es esperable, porque los hombres se pensionan desde los 62 años y las mujeres desde los 57, y muchas de las personas más jóvenes del grupo todavía no cumplen los requisitos o siguen trabajando. Por sexo, el `r f1(pens_hombre)` % de los hombres y el `r f1(pens_mujer)` % de las mujeres tienen pensión.
+
+```{r}
+#| label: tbl-sinpension
+#| tbl-colwidths: [18,8,14,22,38]
+#| tbl-cap: "Situación económica de los adultos mayores de La América según tengan o no pensión"
+# Cuadro 2: objeto cuadro2, sección 9.3 del código
+kable(cuadro2, digits = 1, booktabs = TRUE, format.args = list(decimal.mark = ","))
+```
+\vspace{-0.3cm}
+\footnotesize Fuente: cálculos propios a partir de la ECV Medellín 2025. La facilidad para llegar a fin de mes va de 0 (muy difícil) a 10 (sin dificultad). \normalsize
+
+El @tbl-sinpension muestra por qué el problema importa. De los adultos mayores sin pensión, el `r f1(cuadro2[[3]][1])` % sigue trabajando, mientras que entre los pensionados nadie lo hace. Solo el `r f1(cuadro2[[4]][1])` % de quienes no tienen pensión recibe alguna ayuda de asistencia social, de modo que la mayoría depende de su trabajo o de su familia. Además, califican su facilidad para llegar a fin de mes con `r f1(cuadro2[[5]][1])` sobre 10, frente a `r f1(cuadro2[[5]][2])` de los pensionados.
+
+## Comparación de La América con Medellín y con otras comunas
+
+```{r}
+#| label: tbl-comparacion
+#| tbl-colwidths: [15,7,10,9,11,14,10,16]
+#| tbl-cap: "Adultos mayores de La América, de grupos de comunas según IMCV 2024 y de Medellín"
+# Cuadro 3: objeto cuadro3, sección 9.4 del código
+kable(cuadro3, digits = 1, booktabs = TRUE, format.args = list(decimal.mark = ","))
+```
+\vspace{-0.3cm}
+\footnotesize Fuente: cálculos propios a partir de la ECV Medellín 2025 y del IMCV 2024 de la Alcaldía de Medellín. Similares: Belén, La Candelaria y Guayabal. Superiores: El Poblado y Laureles-Estadio. Menores: las otras diez comunas. "Trabaja, sin pensión" es el porcentaje que trabaja entre quienes no tienen pensión. \normalsize
+
+El @tbl-comparacion pone a La América en contexto. Su cobertura (`r f1(cmp_val("La América", "Pensión (%)"))` %) es mayor que la de Medellín (`r f1(cmp_val("Medellín", "Pensión (%)"))` %) y que la de las comunas de condiciones menores (`r f1(cmp_val("Menores", "Pensión (%)"))` %), parecida a la de las comunas similares (`r f1(cmp_val("Similares", "Pensión (%)"))` %) y bastante menor que la de El Poblado y Laureles-Estadio (`r f1(cmp_val("Superiores", "Pensión (%)"))` %). El orden coincide con el de la educación: los adultos mayores de La América tienen `r f1(cmp_val("La América", "Años educ."))` años de educación en promedio, frente a `r f1(cmp_val("Medellín", "Años educ."))` en la ciudad y `r f1(cmp_val("Superiores", "Años educ."))` en las comunas superiores. En La América, el `r f1(cmp_val("La América", "Superior (%)"))` % de los adultos mayores tiene educación superior, mientras que en las comunas menores solo el `r f1(cmp_val("Menores", "Superior (%)"))` %.
+
+Hay otro dato que llama la atención: en las comunas superiores, el `r f1(cmp_val("Superiores", "Trabaja sin pensión (%)"))` % de los adultos mayores sin pensión trabaja, más que en cualquier otro grupo. Una posible explicación es que allí hay más profesionales independientes o dueños de negocio que siguen activos, pero la ECV no permite comprobarlo.
+
+```{r}
+#| label: fig-imcv
+#| fig-cap: "IMCV 2024 y porcentaje de adultos mayores con pensión, por comuna"
+#| fig-align: center
+#| fig-width: 7
+#| fig-height: 4.5
+#| out-width: "85%"
+# Gráfico 2: objeto grafico2, sección 3.4 del código
+grafico2
+```
+\vspace{-0.3cm}
+\begin{center}\footnotesize Fuente: cálculos propios a partir de la ECV Medellín 2025 e IMCV 2024 (Alcaldía de Medellín).\end{center}
+
+El @fig-imcv muestra que, entre las 16 comunas, las que tienen mejores condiciones de vida tienen también más adultos mayores pensionados. La América está en la parte alta de la ciudad, junto a Belén, pero lejos de Laureles-Estadio y El Poblado, donde más de la mitad de los adultos mayores tiene pensión.
+
+```{r}
+#| label: fig-brecha
+#| fig-cap: "Porcentaje con pensión por nivel educativo: La América, grupos de comunas y Medellín"
+#| fig-align: center
+#| fig-width: 7
+#| fig-height: 4.5
+#| out-width: "85%"
+# Gráfico 3: objeto grafico3, sección 3.4 del código
+grafico3
+```
+\vspace{-0.3cm}
+\begin{center}\footnotesize Fuente: cálculos propios a partir de la ECV Medellín 2025 e IMCV 2024.\end{center}
+
+El @fig-brecha compara la brecha educativa entre grupos. En todos los grupos, quienes tienen educación superior tienen más pensión que quienes tienen primaria o menos. Es decir, la brecha aparece en toda la ciudad y no es exclusiva de La América. En Medellín la brecha va de `r f1(brecha_val("Medellín", "Primaria o menos"))` % a `r f1(brecha_val("Medellín", "Superior"))` %, y en La América de `r f1(tab_educ$pct_pension[1])` % a `r f1(tab_educ$pct_pension[3])` %. Lo que diferencia a las comunas es sobre todo cuántos adultos mayores hay en cada nivel educativo: en las comunas menores, el `r f1(cmp_val("Menores", "Primaria o menos (%)"))` % tiene primaria o menos.
+
+# Modelo econométrico
+
+Como la variable dependiente es binaria (tener o no pensión), usamos modelos de elección discreta. Siguiendo lo visto en clase, partimos de una variable latente $y_i^*$, que puede entenderse como la diferencia entre la historia laboral formal acumulada por la persona y la que exige el sistema para pensionarse. No la observamos; lo que observamos es si la persona está pensionada:
+
+$$
+\begin{aligned}
+y_i^* &= \beta_0 + \beta_1\, educ_i + \beta_2\, edad_i + \beta_3\, edad_i^2 + \beta_4\, mujer_i \\
+      &\quad + \beta_5\, pareja_i + \beta_6\, estrato_i + \beta_7\, migrante_i + e_i, \qquad pension_i = 1[y_i^* > 0]
+\end{aligned}
+$$
+
+Entonces, la probabilidad de tener pensión es
+
+$$
+P(pension_i = 1 \mid \mathbf{x}_i) = G(\beta_0 + \mathbf{x}_i\boldsymbol{\beta})
+$$
+
+donde $pension_i$ vale 1 si el adulto mayor $i$ está jubilado y 0 si no; $educ_i$ son sus años de educación (la variable de interés); $edad_i$ y $edad_i^2$ capturan los requisitos de edad y las diferencias entre generaciones; $mujer_i$, $pareja_i$ y $migrante_i$ son variables binarias; $estrato_i$ es el estrato de la vivienda; y $e_i$ es el error, que recoge lo que no observamos (por ejemplo, el número de semanas cotizadas o la historia laboral). Estimamos tres versiones:
+
+- **Modelo de probabilidad lineal (MPL):** $G(z) = z$, estimado por MCO. Como en el MPL los errores son heterocedásticos por construcción, usamos errores estándar robustos HC1, como se vio en el tema de MCG.
+- **Probit:** $G(z) = \Phi(z)$, la función de distribución normal estándar. Es nuestro **modelo principal**, porque garantiza probabilidades entre 0 y 1 y permite efectos no lineales.
+- **Logit:** $G(z) = \Lambda(z) = \exp(z)/[1 + \exp(z)]$, para comparar con el probit.
+
+El probit y el logit se estiman por máxima verosimilitud. Como sus coeficientes no se pueden interpretar directamente, reportamos el **efecto parcial promedio** de cada variable, que se interpreta en puntos porcentuales. Para la bondad de ajuste usamos el pseudo $R^2$ de McFadden, la prueba de razón de verosimilitud, el porcentaje de predicciones correctas, la prueba de Hosmer-Lemeshow y el área bajo la curva ROC, igual que en el ejercicio de clase.
+
+**Hipótesis.** Esperamos $\beta_1 > 0$: más educación, más probabilidad de haber tenido empleo formal y de haber cotizado lo suficiente. Para la edad esperamos un efecto positivo, porque más personas han cumplido los requisitos. Para la mujer esperamos un efecto negativo, por trayectorias laborales más cortas. Para el estrato esperamos un efecto positivo, por la relación entre nivel socioeconómico y empleo formal. Para el migrante esperamos un efecto negativo. Para la pareja no tenemos un signo claro: un hogar con dos personas puede depender del ingreso del cónyuge, pero también puede reflejar más estabilidad.
+
+**Alcance de la interpretación.** La educación no fue asignada al azar y la ECV no tiene un instrumento válido para ella, así que no podemos aplicar variables instrumentales. Por eso interpretamos $\beta_1$ como una **asociación** entre educación y pensión, controlando por las demás variables, y no como un efecto causal.
+
+# Resultados
+
+## Estimaciones para La América
+
+```{r}
+#| label: tbl-ape
+#| tbl-cap: "Efectos parciales promedio sobre la probabilidad de tener pensión, La América"
+# Cuadro 4: objeto cuadro4, sección 9.5 del código
+kable(cuadro4, booktabs = TRUE, align = "lccc")
+```
+\vspace{-0.3cm}
+\footnotesize Fuente: cálculos propios a partir de la ECV Medellín 2025. Errores estándar entre paréntesis (robustos HC1 en el MPL). *** p<0,01; ** p<0,05; * p<0,1. Los coeficientes de los tres modelos están en el anexo. \normalsize
+
+El @tbl-ape presenta los efectos parciales promedio. El resultado principal es el de la educación: **en el probit, un año más de educación aumenta en promedio la probabilidad de tener pensión en `r f1(100*ape_e)` puntos porcentuales**, y el efecto es significativo al 1 %. Los tres modelos dan casi el mismo valor (`r f1(100*g_ame(ame_mpl,"educ"))`, `r f1(100*ape_e)` y `r f1(100*g_ame(ame_log,"educ"))` puntos), así que el resultado no depende de la forma funcional. Llevado a una escala más útil: pasar de primaria (5 años) a bachillerato completo (11 años) se asocia con unos `r f1(600*ape_e)` puntos más de probabilidad de tener pensión. Es un efecto grande, porque la cobertura promedio en la comuna es de `r pct(mean(base$pension))` %.
+
+Las predicciones del probit lo muestran con más claridad. Para una mujer de 71 años, de estrato 4, sin pareja y que siempre ha vivido en Medellín, la probabilidad de tener pensión es `r pct(prob_educ[1])` % con primaria, `r pct(prob_educ[2])` % con bachillerato y `r pct(prob_educ[3])` % con universidad. Para un hombre con las mismas características, las probabilidades son `r pct(prob_educ[4])` %, `r pct(prob_educ[5])` % y `r pct(prob_educ[6])` %. El @fig-curvas presenta estas curvas para todos los años de educación.
+
+```{r}
+#| label: fig-curvas
+#| fig-cap: "Probabilidad estimada de tener pensión según años de educación y sexo (probit)"
+#| fig-align: center
+#| fig-width: 6
+#| fig-height: 4
+#| out-width: "75%"
+# Gráfico 4: objeto grafico4, sección 5.4 del código
+grafico4
+```
+\vspace{-0.3cm}
+\begin{center}\footnotesize Fuente: cálculos propios a partir de la ECV Medellín 2025. Persona de `r f1(mean(base$edad))` años, estrato 4, sin pareja y no migrante. Bandas: intervalos de confianza al 95 \%.\end{center}
+
+Sobre los controles:
+
+- **Edad:** cada año adicional aumenta la probabilidad en `r f1(100*g_ame(ame_pro,"edad"))` puntos en promedio, pero con rendimientos decrecientes (el término al cuadrado es negativo). Esto coincide con que más personas cumplen los requisitos a medida que envejecen.
+- **Pareja:** vivir en pareja reduce la probabilidad en `r f1(-100*g_ame(ame_pro,"pareja"))` puntos (significativo al 5 %). Una explicación posible es que, en algunos hogares, uno de los dos cónyuges (con frecuencia la mujer) no trabajó en el mercado formal y depende del ingreso o la pensión del otro.
+- **Mujer:** el efecto es negativo (`r f1(100*g_ame(ame_pro,"mujer"))` puntos), pero no es significativo en La América. En la muestra de toda la ciudad sí lo es, como se ve en la sección 5.4; en la comuna la muestra es pequeña para detectarlo.
+- **Estrato:** es negativo y solo significativo al 10 % (`r f1(100*g_ame(ame_pro,"estrato"))` puntos). Dentro de La América casi todos son de estratos 3 a 5, y en el estrato 5 hay menos pensionados que en el 4 (`r f1(pens_e5)` % frente a `r f1(pens_e4)` %). Esto podría reflejar a personas independientes o dueños de negocio con otras fuentes de ingreso, pero no lo podemos comprobar con la encuesta.
+- **Migrante:** no tiene un efecto significativo en La América.
+
+Hay que recordar que significancia estadística no es lo mismo que importancia económica. La educación es significativa y además su efecto es grande frente a la cobertura de la comuna; la pareja es significativa y también tiene un tamaño importante (`r f1(-100*g_ame(ame_pro,"pareja"))` puntos); el estrato, en cambio, es apenas significativo al 10 %.
+
+## Bondad de ajuste y comparación entre modelos
+
+El MPL predice `r n_fuera` probabilidades por fuera del intervalo [0, 1], una de las limitaciones de este modelo vistas en clase; el probit, en cambio, da probabilidades entre `r f3(min(base$y_est_p))` y `r f3(max(base$y_est_p))`. Para el probit:
+
+- **Pseudo $R^2$ de McFadden:** `r f3(pr2_p["McFadden"])`. Es bajo, como suele pasar en modelos con datos individuales, y no se interpreta igual que el $R^2$ de MCO.
+- **Razón de verosimilitud:** el estadístico es `r f1(lr$Chisq[2])` con `r lr$Df[2]` grados de libertad (p < 0,001), así que se rechaza que todos los coeficientes, salvo el intercepto, sean cero.
+- **Predicciones correctas:** con un umbral de 0,5, el modelo clasifica bien el `r f1(hm5[1])` % de los casos. Con un umbral igual a la proporción de pensionados (`r f2(mean(base$pension))`), acierta el `r f1(hmk[1])` %: el `r f1(hmk[3])` % de los pensionados y el `r f1(hmk[2])` % de los no pensionados. El modelo sin variables (que predice para todos el resultado más frecuente) acertaría el `r f1(pct_nulo)` %.
+- **Hosmer-Lemeshow:** el estadístico es `r f2(hl$statistic)` (p = `r f3(hl$p.value)`), así que no se rechaza la hipótesis nula de que el modelo ajusta bien.
+- **Curva ROC (@fig-roc):** el área bajo la curva es `r f3(auc_v)`, lo que indica una capacidad de predicción aceptable (0,5 sería azar y 1 una predicción perfecta).
+
+```{r}
+#| label: fig-roc
+#| fig-cap: "Curva ROC del probit para La América"
+#| fig-width: 5
+#| fig-height: 5
+#| out-width: "55%"
+#| fig-align: center
+# Gráfico 5: la misma curva ROC de la sección 6 del código (función lroc de clase)
+invisible(lroc(probit, auc.coords = c(.1, .1)))
+```
+\begin{center}\footnotesize Fuente: cálculos propios a partir de la ECV Medellín 2025.\end{center}
+
+El logit tiene prácticamente la misma log-verosimilitud (`r f2(logLik(logit))` frente a `r f2(logLik(probit))` del probit) y los mismos efectos parciales, así que elegir uno u otro no cambia las conclusiones.
+
+## Robustez
+
+```{r}
+#| label: tbl-robustez
+#| tbl-cap: "Efecto parcial promedio de la educación con especificaciones alternativas (probit)"
+# Cuadro 5: objeto cuadro5, sección 9.7 del código
+kable(cuadro5, booktabs = TRUE, align = "lccc")
+```
+\vspace{-0.3cm}
+\footnotesize Fuente: cálculos propios a partir de la ECV Medellín 2025. `r if (todos_sig_1) "Todos los efectos son significativos al 1 %." else ""` \normalsize
+
+El @tbl-robustez muestra que el resultado no depende de las dos decisiones más discutibles. Si se excluye a los `r n_pens_sinmonto + n_nopens_sinmonto` adultos mayores sin monto reportado y solo se cuenta como pensionado a quien reportó un monto positivo, el efecto de un año de educación es `r f1(100*ape_m$AME)` puntos, casi igual al principal. Si en vez de años se usan niveles educativos, tener secundaria o media se asocia con `r f1(100*ape_n$AME[1])` puntos más de probabilidad que tener primaria o menos, y tener educación superior con `r f1(100*ape_n$AME[2])` puntos más.
+
+## La América frente a Medellín y a los grupos de comunas
+
+```{r}
+#| label: fig-ape
+#| fig-cap: "Efecto parcial promedio de un año de educación sobre la probabilidad de tener pensión (probit)"
+#| fig-align: center
+#| fig-width: 6
+#| fig-height: 3.5
+#| out-width: "75%"
+# Gráfico 6: objeto grafico6, sección 8 del código
+grafico6
+```
+\vspace{-0.3cm}
+\begin{center}\footnotesize Fuente: cálculos propios a partir de la ECV Medellín 2025 e IMCV 2024. Barras: intervalos de confianza al 95 \%. Mismo probit estimado por separado en cada muestra.\end{center}
+
+```{r}
+#| label: tbl-ape-grupos
+#| tbl-cap: "Efecto parcial promedio de la educación por grupo de comunas (probit)"
+# Cuadro 6: objeto cuadro6, sección 9.8 del código
+kable(cuadro6, booktabs = TRUE, align = "lcccc")
+```
+\vspace{-0.3cm}
+\footnotesize Fuente: cálculos propios a partir de la ECV Medellín 2025 e IMCV 2024. p.p. = puntos porcentuales. \normalsize
+
+Estimamos el mismo probit para toda la ciudad y para cada grupo de comunas (@fig-ape y @tbl-ape-grupos). En todos los casos la educación tiene un efecto positivo y significativo al 1 %, así que la relación que encontramos en La América también aparece en el resto de Medellín. En la ciudad, un año de educación se asocia con `r f1(ape_grupo("Medellín"))` puntos más de probabilidad de tener pensión; en las comunas menores, con `r f1(ape_grupo("Menores"))` puntos; en las similares, con `r f1(ape_grupo("Similares"))`; y en las superiores, con `r f1(ape_grupo("Superiores"))`. El efecto estimado para La América (`r f1(100*ape_e)` puntos) es el más alto, pero su intervalo de confianza es amplio por el tamaño de la muestra y se cruza con los de las comunas similares y superiores.
+
+Para saber si la diferencia frente al resto de la ciudad es estadísticamente significativa, estimamos un MPL con toda la muestra de Medellín e incluimos una interacción entre los años de educación y una dummy de La América (con errores robustos HC1). El coeficiente de la interacción es `r f3(b_inter)` con p = `r f2(p_inter)`, así que **no podemos afirmar que el efecto de la educación sea distinto en La América que en el resto de la ciudad**. La conclusión es que la educación pesa en toda Medellín; lo que distingue a La América es que tiene muchos adultos mayores, lo que hace que el problema sea más grande en la comuna.
+
+En la muestra de toda la ciudad, que es mucho más grande, el sexo sí es significativo: ser mujer reduce la probabilidad de tener pensión en `r f1(-100*g_ame(ame_med, "mujer"))` puntos, y ser migrante en `r f1(-100*g_ame(ame_med, "migrante"))` puntos. En la ciudad el estrato tiene un efecto positivo, porque compara comunas muy distintas entre sí (de estrato 1 a 6), mientras que dentro de La América las diferencias de estrato son pequeñas.
+
+## Trabajo de campo: encuesta a habitantes de La América
+
+Para complementar el análisis cuantitativo hicimos una encuesta corta a `r n_ent` adultos mayores de La América el 20 de octubre de 2026 (cuestionario del anexo B). Preguntamos por el nivel educativo, si tuvieron un trabajo formal, el ingreso mensual actual, si tienen pensión y si reciben alguna ayuda. Los identificamos solo con un código (E1, E2, E3) para proteger su identidad. Son tres personas, elegidas por conveniencia, así que no sirven para generalizar; las usamos para ver si lo que ellas cuentan se parece a lo que encontró el modelo. Tenemos las evidencias fotográficas de las encuestas.
+
+\Needspace{12\baselineskip}
+
+```{r}
+#| label: tbl-encuesta
+#| tbl-colwidths: [6,12,6,16,8,20,10,14,8]
+#| tbl-cap: "Personas encuestadas en La América"
+# Cuadro 7: objeto cuadro8 del código (sección 10)
+names(cuadro8) <- c("Código", "Sexo", "Edad", "Educación", "Pensión", "Ocupación", "Empleo formal", "Ingreso mensual ($)", "Ayudas")
+kable(cuadro8, booktabs = TRUE, align = "lccllcccc")
+```
+
+\vspace{-0.3cm}
+\footnotesize Fuente: trabajo de campo propio, 20 de octubre de 2026. Ayudas: si recibe ayuda de familia o subsidio. \normalsize
+
+Los resultados van en la misma dirección que el modelo. De las `r n_ent` personas, `r n_ent_sin` no tienen pensión: E1 (`r ent$edad[1]` años) llegó solo a bachillerato incompleto y hoy trabaja como instructor independiente de tenis, con un ingreso de entre $`r format(ent$ingreso_mes_min[1], big.mark = ".", decimal.mark = ",")` y $`r format(ent$ingreso_mes_max[1], big.mark = ".", decimal.mark = ",")` al mes (entre $`r format(ent$ingreso_dia_min[1], big.mark = ".", decimal.mark = ",")` y $`r format(ent$ingreso_dia_max[1], big.mark = ".", decimal.mark = ",")` por día de trabajo) y sin ayudas; E2 (`r ent$edad[2]` años) tiene primaria incompleta, es ama de casa y vive con $`r format(ent$ingreso_mes_min[2], big.mark = ".", decimal.mark = ",")` al mes, con ayuda de sus hijos. Las dos respondieron que nunca tuvieron un trabajo formal, que es justo el mecanismo que plantea la literatura: sin empleo formal no se cotiza y sin cotización no hay pensión. En cambio, la única persona con pensión, E3 (`r ent$edad[3]` años), tiene educación universitaria completa, declaró haber tenido un trabajo formal y reporta el mayor ingreso ($`r format(ent$ingreso_mes_min[3], big.mark = ".", decimal.mark = ",")` al mes). Entre las tres personas, a mayor nivel educativo más probabilidad de tener pensión, como en el probit. Las citas textuales muestran los mecanismos:
+
+**E1, hombre de `r ent$edad[1]` años, instructor independiente de tenis, sin pensión.**
+
+```{r}
+#| results: asis
+citas_entrevistado(1)
+```
+
+**E2, mujer de `r ent$edad[2]` años, ama de casa, primaria incompleta, sin pensión.**
+
+```{r}
+#| results: asis
+citas_entrevistado(2)
+```
+
+**E3, mujer de `r ent$edad[3]` años, educación universitaria, pensionada.**
+
+```{r}
+#| results: asis
+citas_entrevistado(3)
+```
+
+Las citas de E1 y E2 apuntan al mismo canal: ambos trabajaron o trabajan en actividades informales (E1 cobra "por cada clase", E2 dice que "siempre" trabajó en cosas informales) y por eso no cotizaron. E2 además cuenta que dejó la escuela porque tenía que ayudar en la casa, lo que conecta la baja educación con el trabajo informal. E3, en cambio, dice que estudiar en la universidad le dio "mejores oportunidades laborales", y hoy vive de su pensión sin depender de ayudas. También se ve que E1, con 60 años, todavía trabaja sin pensión y depende de sus ahorros y de tener vivienda propia, y que E2 depende de la ayuda de sus hijos, lo que se parece a lo que muestra el @tbl-sinpension para los adultos mayores sin pensión, que dependen de su trabajo o de su familia.
+
+# Conclusiones
+
+Encontramos que, en La América, la educación está fuertemente asociada con tener pensión en la vejez. Un año adicional de educación aumenta en promedio en `r f1(100*ape_e)` puntos porcentuales la probabilidad de que un adulto mayor esté pensionado, y una persona con universidad tiene más del doble de probabilidad de tener pensión que una con primaria. El resultado es igual con MPL, probit y logit, se mantiene si se cambia la definición de pensión o la medida de educación, y aparece también en Medellín y en todos los grupos de comunas. La pequeña encuesta que hicimos a tres habitantes de la comuna va en la misma dirección: las dos personas sin pensión tenían educación incompleta y ningún trabajo formal, y la única pensionada tenía educación universitaria. Esto es coherente con la literatura que relaciona la baja cobertura pensional con el acceso al empleo formal y este con la educación (Santa María et al., 2010; Bosch et al., 2013; Becerra et al., 2022).
+
+La comparación con la ciudad muestra que La América tiene una cobertura mayor que la de Medellín, por la mayor educación de sus adultos mayores, pero aun así más de la mitad de ellos no tiene pensión, y la comuna está lejos de Laureles-Estadio y El Poblado. Como la comuna tiene una de las poblaciones más envejecidas de la ciudad, esa falta de cobertura afecta a muchas personas: entre quienes no tienen pensión, casi tres de cada diez siguen trabajando y muy pocos reciben ayudas sociales.
+
+**Implicaciones de política.** Como la pensión depende de toda una vida laboral, los resultados tienen dos tipos de implicaciones. Para los adultos mayores que ya no alcanzaron a pensionarse, la educación ya no es una herramienta; lo que se necesita son ingresos no contributivos. Aquí es clave que la comuna y la Alcaldía preparen la implementación del pilar solidario de la Ley 2381 de 2024 y revisen la focalización de las ayudas, porque en La América muy pocos adultos mayores sin pensión las reciben, posiblemente porque los programas se focalizan por estrato y la comuna tiene estratos medios, algo que la propia comunidad señaló en el Plan de Desarrollo Local (Alcaldía de Medellín, 2019). Para las personas que hoy están entre los 40 y los 60 años, lo importante es aumentar su formación y su acceso a empleo formal, y orientar los recursos de Presupuesto Participativo que la comuna ya destina a educación y formación para el trabajo también hacia adultos que no terminaron el bachillerato o no tienen formación técnica.
+
+**Limitaciones.** Primero, los resultados son asociaciones y no efectos causales: la educación puede estar recogiendo otras características que no observamos, como la habilidad o la red de contactos, y no hay en la ECV un instrumento válido para corregirlo. Segundo, no observamos la historia laboral ni las semanas cotizadas, que son el mecanismo por el que la educación llevaría a la pensión. Tercero, la muestra de La América es pequeña (`r n_base` personas), lo que hace imprecisos algunos efectos, como el de ser mujer. Cuarto, la pensión se mide con la situación laboral declarada, y la educación con años asignados por nivel. Por último, trabajamos sin factores de expansión, así que las cifras describen la muestra y no son estimaciones oficiales de población. Un trabajo futuro podría usar varias rondas de la ECV para ver cómo cambia la cobertura en el tiempo, o incluir información sobre semanas cotizadas.
+
+# Referencias {.unnumbered}
+
+Alcaldía de Medellín. (2019). *Plan de Desarrollo Local Comuna 12 – La América. Actualización 2019*. https://medellin.gov.co/es/wp-content/uploads/2024/07/PDL_C12.pdf
+
+Alcaldía de Medellín, Departamento Administrativo de Planeación. (2025). *Encuesta de Calidad de Vida 2025: base de datos, diccionario de datos y ficha técnica*. Medellín.
+
+Alcaldía de Medellín, Departamento Administrativo de Planeación. (s. f.). *Índice Multidimensional de Condiciones de Vida (IMCV) por comuna* [servicio de indicadores de la ECV]. https://www.medellin.gov.co/servidormapas/rest/services/estadisticas/VC_Indicadores_ECV/MapServer/2
+
+Becerra, O., García-Huitrón, M. y González-Velosa, C. (2022). *Protección económica a la vejez en Colombia: avenidas de reforma* (Nota técnica IDB-TN-02443). Banco Interamericano de Desarrollo.
+
+Becker, G. S. (1964). *Human capital: A theoretical and empirical analysis, with special reference to education*. National Bureau of Economic Research / Columbia University Press.
+
+Bosch, M., Melguizo, Á. y Pagés, C. (2013). *Mejores pensiones, mejores trabajos: hacia la cobertura universal en América Latina y el Caribe*. Banco Interamericano de Desarrollo.
+
+Congreso de la República de Colombia. (1993). *Ley 100 de 1993, por la cual se crea el sistema de seguridad social integral*.
+
+Congreso de la República de Colombia. (2003). *Ley 797 de 2003*.
+
+Congreso de la República de Colombia. (2024). *Ley 2381 de 2024, por medio de la cual se establece el Sistema de Protección Social Integral para la Vejez, Invalidez y Muerte de origen común*.
+
+DANE. (2026a). *Pobreza monetaria 2025: resultados* [Presentación]. Departamento Administrativo Nacional de Estadística. https://www.dane.gov.co/files/operaciones/PM/pres-PM-2025.pdf
+
+DANE. (2026b, 13 de abril). *Boletín técnico: Empleo informal y seguridad social, trimestre móvil diciembre 2025 – febrero 2026*. Departamento Administrativo Nacional de Estadística. https://www.dane.gov.co/files/operaciones/GEIH/bol-GEIHEISS-dic2025-feb2026.pdf
+
+El Colombiano. (2026, 10 de julio). Mayores de 60 serán el 22 % de la población en 2035: crean mesa de economía plateada en Medellín. https://www.elcolombiano.com/inicio/medellin-adulto-mayor-economia-plateada-poblacion-envejecimiento-empleo-senior-IE38698088
+
+Galvis-Aponte, L. A. (2024). *Education, gender, and labor informality in urban areas of Colombia* (Documentos de trabajo sobre economía regional y urbana). Banco de la República. https://doi.org/10.32468/dtseru.332
+
+Gujarati, D. y Porter, D. (2010). *Econometría* (5.ª ed.). McGraw Hill.
+
+Infobae. (2025, 3 de junio). Así funcionarán los pilares de la nueva ley pensional en Colombia: bono de $225.000 y cobertura histórica. https://www.infobae.com/colombia/2025/06/04/asi-funcionaran-los-pilares-de-la-nueva-ley-pensional-en-colombia-bono-de-225000-y-cobertura-historica/
+
+Medellín Cómo Vamos. (2026, 19 de agosto). *Antioquia envejece más rápido que el país: informe de Antioquia Cómo Vamos presenta los retos y oportunidades con la población adulta mayor*. https://www.medellincomovamos.org/antioquia-envejece-mas-rapido-que-el-pais-informe-de-antioquia-como-vamos-presenta-los-retos-y-oportunidades-con-la-poblacion-adulta-mayor-2/
+
+Mincer, J. (1974). *Schooling, experience, and earnings*. National Bureau of Economic Research.
+
+Prosperidad Social. (2025, 18 de diciembre). *Tres millones de personas mayores empiezan a recibir bono pensional de 230.000 pesos*. https://prosperidadsocial.gov.co/Noticias/tres-millones-de-personas-mayores-empiezan-a-recibir-bono-pensional-de-230-000-pesos/
+
+Santa María, M., Steiner, R., Botero, J. H., Martínez, M. y Millán, N. (2010). *El sistema pensional en Colombia: retos y alternativas para aumentar la cobertura*. Fedesarrollo.
+
+Vanguardia. (2026, 26 de agosto). Reforma pensional: esto es lo que cambiaría para usted desde abril de 2027. https://www.vanguardia.com/colombia/2026/08/26/reforma-pensional-esto-es-lo-que-cambiaria-para-usted-desde-abril-de-2027/
+
+Wooldridge, J. M. (2013). *Introducción a la econometría: un enfoque moderno* (5.ª ed.). Cengage Learning.
+
+# Anexo A: coeficientes estimados {.unnumbered}
+
+```{r}
+#| results: asis
+# Cuadro 7: los mismos modelos y errores HC1 de la sección 9.9 del código
+stargazer(mpl, probit, logit, type = "latex", header = FALSE, digits = 3,
+          font.size = "footnotesize", column.sep.width = "1pt", no.space = TRUE,
+          dep.var.caption = "Variable dependiente: pensión", dep.var.labels.include = FALSE,
+          omit.stat = c("ser", "f", "adj.rsq"),
+          title = "Coeficientes estimados para La América",
+          column.labels = c("MPL", "Probit", "Logit"), model.names = FALSE,
+          covariate.labels = c("Años de educación", "Edad", "Edad al cuadrado", "Mujer",
+                               "Vive en pareja", "Estrato", "Migrante", "Constante"),
+          se = list(se_mpl_hc1, NULL, NULL),
+          notes = c("Fuente: cálculos propios, ECV Medellín 2025.", "MPL con errores robustos HC1."),
+          notes.label = "Notas:", notes.align = "l", table.placement = "H",
+          decimal.mark = ",", digit.separator = ".")
+```
+
+# Anexo B: cuestionario de la encuesta {.unnumbered}
+
+**Presentación.** Somos estudiantes de Economía de la Universidad EAFIT y hacemos un trabajo sobre educación y pensión en la vejez en La América. Las respuestas son anónimas y solo se usan para el trabajo.
+
+**Datos básicos:** barrio, sexo, edad y ocupación actual.
+
+1. ¿Cuál es su nivel educativo?
+2. ¿Tuvo un trabajo formal (con contrato y cotización)?
+3. ¿Cuál es su ingreso mensual hoy?
+4. ¿Recibe pensión de jubilación?
+5. ¿Recibe alguna ayuda (familia o subsidio)?

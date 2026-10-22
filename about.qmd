@@ -1,0 +1,15 @@
+---
+title: "Sobre el proyecto"
+---
+
+**Autores:** Juan David Grisales Toro y Jacobo Mantilla L. (Grupo 2), estudiantes de Economía de la Universidad EAFIT.
+
+**Curso:** Econometría II, 2026-II, profesor Gustavo A. García. **Entrega:** Reto 2, Haciendo Microeconomía (22 de octubre de 2026).
+
+**Comuna analizada:** Comuna 12 – La América, Medellín.
+
+**Pregunta:** ¿Cuánto cambia la probabilidad de que un adulto mayor (60 años o más) de La América tenga pensión de jubilación cuando tiene más años de educación? ¿Cómo se compara La América con Medellín y con comunas de condiciones de vida menores, similares y superiores?
+
+**Datos:** Encuesta de Calidad de Vida de Medellín 2025 (Alcaldía de Medellín), Índice Multidimensional de Condiciones de Vida (IMCV) 2024, y una encuesta propia a habitantes de la comuna.
+
+**Método:** modelos de elección discreta (probabilidad lineal, probit y logit), vistos en el curso.

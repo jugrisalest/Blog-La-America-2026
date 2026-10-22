@@ -1,0 +1,31 @@
+project:
+  type: website
+  output-dir: _site
+  render:
+    - index.qmd
+    - about.qmd
+    - descargas.qmd
+    - posts/*/index.qmd
+  resources:
+    - descargas/*
+
+website:
+  title: "Blog – La América"
+  description: "Educación y pensión en la vejez en la Comuna 12 – La América de Medellín"
+  navbar:
+    left:
+      - href: index.qmd
+        text: Inicio
+      - href: about.qmd
+        text: Sobre el proyecto
+      - href: descargas.qmd
+        text: Documento, datos y código
+  page-footer: "Econometría II · Escuela de Finanzas, Economía y Gobierno – Universidad EAFIT (2026)"
+
+format:
+  html:
+    theme: cosmo
+    css: styles.css
+    toc: true
+    lang: es
+    date-format: "D [de] MMMM [de] YYYY"

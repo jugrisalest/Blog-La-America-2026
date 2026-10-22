@@ -1,0 +1,24 @@
+---
+title: "Documento completo, base de datos y código"
+---
+
+Aquí está todo el material del trabajo.
+
+## Documento completo
+
+- [Documento completo (PDF)](descargas/documento_completo_grisales_mantilla_R2.pdf): introducción, revisión de literatura, datos, modelo, resultados, conclusiones y referencias.
+
+## Código
+
+- [Código completo (.qmd)](descargas/grisales_mantilla_R2.qmd): contiene toda la limpieza de datos, las estadísticas, las estimaciones y los cuadros y gráficos del documento. Para compilarlo se necesita el archivo `ECV_2025.xlsx` en la misma carpeta y R con los paquetes que aparecen en el primer bloque de código.
+
+## Base de datos final
+
+- [Base final de La América (CSV)](descargas/base_final_LaAmerica.csv): 290 adultos mayores de 60 años o más de La América, con las variables usadas en el modelo.
+- [Base final de las 16 comunas de Medellín (CSV)](descargas/base_final_Medellin_16comunas.csv): 4.959 adultos mayores, usada para las comparaciones.
+
+Variables principales: `pension` (1 = jubilado), `educ` (años de educación), `edad`, `mujer`, `pareja`, `estrato`, `migrante`, `comuna`, `imcv_2024` y `grupo` (La América, Similares, Superiores o Menores).
+
+## Fuente original
+
+La Encuesta de Calidad de Vida 2025 es publicada por el Departamento Administrativo de Planeación de la Alcaldía de Medellín ([página de la encuesta](https://www.medellin.gov.co/es/centro-documental/encuesta-calidad-de-vida/)).
